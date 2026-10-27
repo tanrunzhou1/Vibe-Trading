@@ -74,7 +74,7 @@ def test_parse_source_order_strips_lowercases_and_drops_empty() -> None:
 
 def test_is_valid_source_order_requires_exact_permutation() -> None:
     assert registry.is_valid_source_order(
-        "crypto", ["local", "futu", "okx", "binance", "ccxt", "yfinance"]
+        "crypto", ["local", "okx", "binance", "ccxt", "yfinance"]
     )
     assert not registry.is_valid_source_order("crypto", ["okx"])  # subset
     assert not registry.is_valid_source_order("crypto", ["okx"] * 5)  # dupes
@@ -123,11 +123,11 @@ def test_no_env_overrides_refresh_is_noop_for_patched_chains() -> None:
 
 def test_refresh_gated_on_env_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
-        "MARKET_DATA_ORDER_CRYPTO", "binance,futu,okx,ccxt,yfinance,local"
+        "MARKET_DATA_ORDER_CRYPTO", "binance,okx,ccxt,yfinance,local"
     )
     refresh_source_order_overrides()
     first = registry.FALLBACK_CHAINS["crypto"]
-    assert first == ["binance", "futu", "okx", "ccxt", "yfinance", "local"]
+    assert first == ["binance", "okx", "ccxt", "yfinance", "local"]
 
     # Unchanged env -> no-op, entry object untouched.
     refresh_source_order_overrides()
@@ -135,7 +135,7 @@ def test_refresh_gated_on_env_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # Changed env -> reassignment (new list object).
     monkeypatch.setenv(
-        "MARKET_DATA_ORDER_CRYPTO", "ccxt,futu,okx,binance,yfinance,local"
+        "MARKET_DATA_ORDER_CRYPTO", "ccxt,okx,binance,yfinance,local"
     )
     refresh_source_order_overrides()
     assert registry.FALLBACK_CHAINS["crypto"] is not first
