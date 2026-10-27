@@ -1,8 +1,9 @@
-"""Futu OpenAPI-backed loader for HK and China A-share OHLCV data."""
+"""Futu OpenAPI-backed loader for HK/A-share and crypto OHLCV data."""
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -18,6 +19,7 @@ from backtest.loaders.registry import register
 logger = logging.getLogger(__name__)
 
 _OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
+_CRYPTO_PAIR_RE = re.compile(r"^(?P<base>[A-Z0-9]+)(?:[-/])?(?P<quote>USDT|USD)$")
 
 _INTERVAL_MAP: dict[str, str] = {
     "1m": "K_1M",
@@ -36,7 +38,7 @@ _INTERVAL_MAP: dict[str, str] = {
 }
 
 
-def _to_futu_symbol(code: str) -> str:
+def _to_futu_symbol(code: str) -> str | None:
     """Convert project symbol to Futu OpenAPI format.
 
     Examples:
@@ -44,14 +46,26 @@ def _to_futu_symbol(code: str) -> str:
         5.HK      -> HK.00005
         000001.SZ -> SZ.000001
         600519.SH -> SH.600519
+        BTC-USDT  -> CC.BTCUSD (Futu spot crypto is USD-quoted)
     """
     upper = code.strip().upper()
+    # Futu's documented CC instruments are spot crypto pairs. Do not route a
+    # project's perpetual/swap contract to a similarly named spot instrument.
+    if re.search(r"-(?:PERP|SWAP)$", upper):
+        return None
     if upper.endswith(".HK"):
         return f"HK.{upper[:-3].zfill(5)}"
     if upper.endswith(".SZ"):
         return f"SZ.{upper[:-3].zfill(6)}"
     if upper.endswith(".SH"):
         return f"SH.{upper[:-3].zfill(6)}"
+    if upper.startswith("CC."):
+        return upper
+    crypto_match = _CRYPTO_PAIR_RE.fullmatch(upper)
+    if crypto_match:
+        # Project crypto accounting treats USDT as USD at its peg. Futu lists
+        # spot crypto pairs under CC and quotes the documented BTC pair in USD.
+        return f"CC.{crypto_match.group('base')}USD"
     return upper
 
 
@@ -105,14 +119,15 @@ def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 @register
 class FutuLoader:
-    """Fetch HK and China A-share bars from Futu OpenAPI.
+    """Fetch HK/A-share and crypto bars from Futu OpenAPI.
 
     Requires FutuOpenD running locally (https://www.futunn.com/download/openAPI)
-    and the environment variables ``FUTU_HOST`` / ``FUTU_PORT`` to be set.
+    and the ``FUTU_HOST`` / ``FUTU_PORT`` settings. Crypto quote-source
+    selection is optional via ``FUTU_CRYPTO_SECURITY_FIRM``.
     """
 
     name = "futu"
-    markets = {"hk_equity", "a_share"}
+    markets = {"hk_equity", "a_share", "crypto"}
     requires_auth = True
 
     def __init__(self) -> None:
@@ -121,6 +136,28 @@ class FutuLoader:
         cfg = get_env_config().data
         self._host = cfg.futu_host
         self._port = cfg.futu_port
+        self._crypto_security_firm = cfg.futu_crypto_security_firm.strip().upper()
+
+    def _open_quote_context(self, futu, *, crypto: bool = False):
+        """Open a quote context, optionally pinning a crypto quote provider."""
+        kwargs = {"host": self._host, "port": self._port}
+        if crypto and self._crypto_security_firm:
+            if self._crypto_security_firm not in {
+                "FUTUSECURITIES", "FUTUINC", "FUTUSG"
+            }:
+                raise NoAvailableSourceError(
+                    "FUTU_CRYPTO_SECURITY_FIRM must be FUTUSECURITIES, FUTUINC, "
+                    "FUTUSG, or empty"
+                )
+            firms = getattr(futu, "SecurityFirm", None)
+            firm = getattr(firms, self._crypto_security_firm, None)
+            if firm is None:
+                raise NoAvailableSourceError(
+                    "installed Futu SDK does not expose SecurityFirm."
+                    f"{self._crypto_security_firm}; update futu-api/OpenD"
+                )
+            kwargs["security_firm"] = firm
+        return futu.OpenQuoteContext(**kwargs)
 
     def is_available(self) -> bool:
         """Return True if FutuOpenD is reachable."""
@@ -149,7 +186,8 @@ class FutuLoader:
         """Fetch OHLCV history from Futu OpenAPI.
 
         Args:
-            codes: Project symbols such as ``700.HK`` or ``000001.SZ``.
+            codes: Project symbols such as ``700.HK``, ``000001.SZ``, or
+                ``BTC-USDT``.
             start_date: Start date in ``YYYY-MM-DD`` format.
             end_date: End date in ``YYYY-MM-DD`` format.
             interval: Backtest interval supported by :data:`_INTERVAL_MAP`.
@@ -178,15 +216,26 @@ class FutuLoader:
         # running gateway.
         pending: List[str] = []
         for code in codes:
+            futu_code = _to_futu_symbol(code)
+            if futu_code is None:
+                logger.info("Futu crypto loader does not serve derivatives: %s", code)
+                continue
+            cache_fields = (
+                [f"crypto_security_firm:{self._crypto_security_firm or 'default'}"]
+                if futu_code.startswith("CC.")
+                else None
+            )
             cached = loader_cache_get(
                 source=self.name,
                 symbol=code,
                 timeframe=interval,
                 start_date=start_date,
                 end_date=end_date,
-                fields=None,
+                fields=cache_fields,
             )
             if cached is not None and not cached.empty:
+                if futu_code.startswith("CC."):
+                    cached.attrs["quote_currency"] = "USD"
                 results[code] = cached.copy()
             else:
                 pending.append(code)
@@ -198,7 +247,12 @@ class FutuLoader:
             import futu  # noqa: PLC0415
 
             ktype = _to_futu_ktype(interval)
-            ctx = futu.OpenQuoteContext(host=self._host, port=self._port)
+            crypto_request = any(
+                (mapped := _to_futu_symbol(code)) is not None
+                and mapped.startswith("CC.")
+                for code in pending
+            )
+            ctx = self._open_quote_context(futu, crypto=crypto_request)
         except Exception as exc:
             raise NoAvailableSourceError(
                 f"Cannot connect to FutuOpenD at {self._host}:{self._port}: {exc}"
@@ -207,6 +261,8 @@ class FutuLoader:
         try:
             for code in pending:
                 futu_code = _to_futu_symbol(code)
+                if futu_code is None:  # derivative codes were filtered above
+                    continue
                 page_key = None
                 pages: List[pd.DataFrame] = []
                 failed = False
@@ -236,13 +292,19 @@ class FutuLoader:
                 normalized = _normalize_frame(pd.concat(pages, ignore_index=True))
                 if normalized.empty:
                     continue
+                if futu_code.startswith("CC."):
+                    normalized.attrs["quote_currency"] = "USD"
                 loader_cache_put(
                     source=self.name,
                     symbol=code,
                     timeframe=interval,
                     start_date=start_date,
                     end_date=end_date,
-                    fields=None,
+                    fields=(
+                        [f"crypto_security_firm:{self._crypto_security_firm or 'default'}"]
+                        if futu_code.startswith("CC.")
+                        else None
+                    ),
                     frame=normalized,
                 )
                 results[code] = normalized

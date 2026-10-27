@@ -240,8 +240,9 @@ FALLBACK_CHAINS: dict[str, list[str]] = {
     # Vietnam (.VN): Yahoo lists HOSE only — HNX and UPCOM are unsupported,
     # so those two are reachable only through the user's local files.
     "vietnam_equity": ["yahoo", "yfinance", "local"],
-    # OKX first (native), then dedicated Binance, then generic CCXT / Yahoo.
-    "crypto": ["okx", "binance", "ccxt", "yfinance", "local"],
+    # Futu (when OpenD is connected) first, then OKX, dedicated Binance,
+    # generic CCXT / Yahoo, and local data.
+    "crypto": ["futu", "okx", "binance", "ccxt", "yfinance", "local"],
     # tushare led this chain while implementing no futures endpoint at all
     # (#1395): ``resolve_loader`` walks FALLBACK_CHAINS and never consults a
     # loader's ``markets`` set, so trimming that set alone would have left

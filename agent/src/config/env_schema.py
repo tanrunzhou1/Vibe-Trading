@@ -220,6 +220,7 @@ class DataConfig(_EnvBase):
     ccxt_fetch_budget_s: float = Field(alias="CCXT_FETCH_BUDGET_S", default=60.0)
     futu_host: str = Field(alias="FUTU_HOST", default="127.0.0.1")
     futu_port: int = Field(alias="FUTU_PORT", default=11111)
+    futu_crypto_security_firm: str = Field(alias="FUTU_CRYPTO_SECURITY_FIRM", default="")
     finnhub_api_key: str = Field(alias="FINNHUB_API_KEY", default="")
     alphavantage_api_key: str = Field(alias="ALPHAVANTAGE_API_KEY", default="")
     tiingo_api_key: str = Field(alias="TIINGO_API_KEY", default="")

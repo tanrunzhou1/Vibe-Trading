@@ -244,10 +244,11 @@ class TestFallbackChains:
         assert not is_valid_source_order("a_share", order)
 
     def test_crypto_chain_includes_yfinance_fallback(self) -> None:
-        """yfinance is a fallback for crypto when OKX, Binance and CCXT fail."""
+        """Futu, OKX, Binance and CCXT precede the yfinance fallback."""
         assert "yfinance" in FALLBACK_CHAINS["crypto"]
-        # OKX, Binance and CCXT should be preferred in that order
-        assert FALLBACK_CHAINS["crypto"][:3] == ["okx", "binance", "ccxt"]
+        assert FALLBACK_CHAINS["crypto"][:4] == [
+            "futu", "okx", "binance", "ccxt"
+        ]
 
     def test_chains_ordered_by_ip_ban_risk(self) -> None:
         """Equity chains lead with throttle-tolerant public sources and trail
@@ -301,8 +302,9 @@ class TestFallbackChains:
         assert "baostock" in FALLBACK_CHAINS["a_share"]
 
     def test_unchanged_chains_preserved(self) -> None:
-        """crypto/fund/macro/forex chains must be left untouched."""
+        """unchanged fund/macro/forex chains retain their reviewed order."""
         assert FALLBACK_CHAINS["crypto"] == [
+            "futu",
             "okx",
             "binance",
             "ccxt",
